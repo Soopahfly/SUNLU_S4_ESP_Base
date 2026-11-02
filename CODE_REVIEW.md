@@ -1,5 +1,7 @@
 # Code review
 
+Historical review of firmware 09fa5d7. Subsequent local software changes implement the shutdown/interlock, sampling/PID/cooldown and cooperative networking remedies with host regression tests. The findings below preserve the original evidence and line numbers; they are not a description of the current code. See [ISSUES.md](ISSUES.md) for current progress and remaining runtime/hardware acceptance.
+
 Reviewed on 2 November 2026 against commit `09fa5d7`: `main.py` (219 lines) and `ssd1306.py`. Firmware was not changed by this documentation work.
 
 ## Assessment

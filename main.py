@@ -1,219 +1,127 @@
-import network
+"""MicroPython entry point. Default configuration is a disconnected bench setup."""
 import time
-from machine import Pin,PWM,I2C
-import dht
-import ssd1306
-import ujson
-import utime
-from umqtt.simple import MQTTClient
-import ntptime
-import time
-
-def sync_time():
-  try:
-    ntptime.settime()
-    print("Zeit synchronisiert:", time.localtime())
-  except Exception as e:
-    print("Fehler bei NTP:", e)
+from controller import Controller, sample_sensors
+from sensors import build_sensors
 
 
-# MQTT Config
-MQTT_CLIENT_ID = "sunlu-controller"
-MQTT_BROKER    = "mqtt.local"
-MQTT_TOPIC     = "sunlu/sensors"
-MQTT_STATUS    = "sunlu/status"
-#I2C Config
-i2c = I2C(0, scl=Pin(22), sda=Pin(21))  # Pins anpassen!
-oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+class Outputs:
+    def __init__(self, machine):
+        self.heat_pin = machine.Pin(25, machine.Pin.OUT, value=0)
+        self.fan_pin = machine.Pin(26, machine.Pin.OUT, value=0)
+        self.heat = self.fan = None
+        self.machine = machine
+
+    def initialise(self):
+        self.heat = self.machine.PWM(self.heat_pin, freq=1000, duty_u16=0)
+        self.fan = self.machine.PWM(self.fan_pin, freq=1000, duty_u16=0)
+
+    def apply(self, controller):
+        if controller.heater == 0:
+            self.heat.duty_u16(0)
+        self.fan.duty_u16(int(controller.fan * 65535 / 100))
+        self.heat.duty_u16(int(controller.heater * 65535 / 100))
+
+    def emergency(self):
+        try:
+            if self.heat is not None:
+                self.heat.duty_u16(0)
+        finally:
+            try:
+                if self.heat is not None:
+                    self.heat.deinit()
+            finally:
+                self.heat_pin.init(self.machine.Pin.OUT, value=0)
+
+    def fault_cooling(self):
+        if self.fan is not None:
+            self.fan.duty_u16(65535)
 
 
-# Sensor Pins
-SENSOR_PINS = [15, 2, 4, 16]
-SENSORS = [dht.DHT22(Pin(pin)) for pin in SENSOR_PINS]
-HEATER =  PWM(Pin(25),freq=1000)
-def set_heater_power(percent):
-    duty = int(percent / 100 * 1023)
-    HEATER.duty(duty)
-FAN = PWM(Pin(26),freq=1000)
-def set_fan_power(percent):
-    duty = int(percent / 100 * 1023)
-    FAN.duty(duty)
-
-#Fan after run
-fan_run_until = 300
-
-
-#I2C Display
-def update_display(temp, heater_power, fan_power, humidity=None, warning=None):
-    oled.fill(0)  # Bildschirm löschen
-
-    oled.text("Filament Trockner", 0, 0)
-    oled.text("Temp: {:.1f} C".format(temp), 0, 12)
-    oled.text("Heizung: {}%".format(int(heater_power)), 0, 24)
-    oled.text("Luefter: {}%".format(int(fan_power)), 0, 36)
-
-    if humidity is not None:
-        oled.text("Feuchte: {}%".format(int(humidity)), 0, 48)
-
-    if warning:
-        oled.text("! WARNUNG !", 0, 56)
-
+def display_status(oled, payload):
+    oled.fill(0)
+    oled.text('SUNLU bench', 0, 0)
+    oled.text(payload['state'], 0, 12)
+    temp = payload['avg_temp']
+    oled.text('Temp: --' if temp is None else 'Temp: %.1f C' % temp, 0, 24)
+    oled.text('Heat: %d%%' % payload['heater_power'], 0, 36)
+    oled.text('Fan: %d%%' % payload['fan_power'], 0, 48)
     oled.show()
 
-# WiFi Connect
-def connect_wifi():
-  print("Connecting to WiFi", end="")
-  sta_if = network.WLAN(network.STA_IF)
-  sta_if.active(True)
-  sta_if.connect('Wokwi-GUEST', '')
-  while not sta_if.isconnected():
-    print(".", end="")
-    time.sleep(0.2)
-  print(" Connected!")
 
-# MQTT Setup
-def connect_mqtt():
-  global client
-  client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, keepalive=60)
-  client.set_last_will(MQTT_STATUS, "offline", retain=True)
-  client.connect()
-  client.publish(MQTT_STATUS, "online", retain=True)
-  print("MQTT Connected!")
-
-# Safe Sensor Read
-def safe_measure(sensor):
-  try:
-    sensor.measure()
-    return {
-      "temp": sensor.temperature(),
-      "humidity": sensor.humidity()
-    }
-  except Exception as e:
-    print("Sensor error:", e)
-    return {
-      "temp": None,
-      "humidity": None
-    }
-#Temp over 30degress
-def any_sensor_over_threshold(sensors, threshold=30.0):
-    for sensor in sensors:
+def run(machine, dht, display_driver, config=None, clock=time, max_steps=None,
+        telemetry_factory=None):
+    outputs = Outputs(machine)
+    control = Controller()
+    telemetry = None
+    try:
+        outputs.initialise()
+        settings = config() if callable(config) else (config or {})
+        i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=100000)
+        sensors = build_sensors(settings, machine, i2c, clock, dht)
+        control = Controller(required_sensors=len(sensors),
+                             enabled=settings.get('HEAT_ENABLED', False))
+        oled = display_driver.SSD1306_I2C(
+            128, 64, i2c)
+        if settings.get('NETWORK_ENABLED', False):
+            if telemetry_factory is None:
+                from telemetry import Telemetry
+                telemetry_factory = Telemetry
+            telemetry = telemetry_factory(settings, machine.unique_id(), clock)
+        snapshot, last_sample = None, None
+        started = clock.ticks_ms()
+        steps = 0
+        while max_steps is None or steps < max_steps:
+            now = clock.ticks_ms()
+            if snapshot is None:
+                if clock.ticks_diff(now, started) < 2000:
+                    clock.sleep_ms(50)
+                    continue
+            elif clock.ticks_diff(now, snapshot['sample_ms']) > control.max_age:
+                control.trip('control deadline')
+                outputs.apply(control)
+            if last_sample is None or clock.ticks_diff(now, last_sample) >= 5000:
+                snapshot = sample_sensors(sensors, now)
+                # Space from completion, so a slow previous sensor read cannot
+                # shorten the next sensor's measurement interval.
+                last_sample = clock.ticks_ms()
+            now = clock.ticks_ms()
+            control.update(snapshot, now, clock.ticks_diff)
+            outputs.apply(control)
+            payload = control.status(snapshot, now)
+            display_status(oled, payload)
+            if telemetry is not None:
+                telemetry.step(payload)
+            steps += 1
+            clock.sleep_ms(50)
+    except BaseException:
+        control.trip('software failure or interruption')
+        raise
+    finally:
         try:
-            sensor.measure()
-            if sensor.temperature() > threshold:
-                return True
-        except:
-            pass
-    return False
-
-#PID Regler 
-class PID:
-  def __init__(self, Kp, Ki, Kd, setpoint):
-    self.Kp = Kp
-    self.Ki = Ki
-    self.Kd = Kd
-    self.setpoint = setpoint
-    self.last_error = 0
-    self.integral = 0
-
-  def compute(self, current_value):
-    error = self.setpoint - current_value
-    self.integral += error
-    derivative = error - self.last_error
-    self.last_error = error
-    output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
-    return max(0, min(100, output))  # Begrenze auf 0–100 %
-def adapt_pid(pid, current_temp, last_temp):
-    delta = abs(current_temp - last_temp)
-
-    # Dynamische Anpassung
-    if delta > 2.0:
-        pid.Kp = 5.0
-        pid.Ki = 0.1
-        pid.Kd = 1.0
-    elif delta > 1.0:
-        pid.Kp = 3.0
-        pid.Ki = 0.2
-        pid.Kd = 0.5
-    else:
-        pid.Kp = 1.5
-        pid.Ki = 0.3
-        pid.Kd = 0.2
+            outputs.emergency()
+        finally:
+            try:
+                outputs.fault_cooling()
+            finally:
+                if telemetry is not None:
+                    telemetry.close()
 
 
-def get_average_values(sensors):
-    temps = []
-    hums = []
-    for sensor in sensors:
-        try:
-            sensor.measure()
-            temps.append(sensor.temperature())
-            hums.append(sensor.humidity())
-        except Exception as e:
-            print("Sensorfehler:", e)
-    avg_temp = sum(temps) / len(temps) if temps else None
-    avg_hum  = sum(hums) / len(hums) if hums else None
-    return avg_temp, avg_hum
+def load_config():
+    # config.py is optional. Avoid swallowing ImportErrors inside an existing config.
+    import os
+    settings = {}
+    if 'config.py' in os.listdir():
+        import config
+        settings = {name: getattr(config, name) for name in dir(config) if name.isupper()}
+    return settings
 
 
-# Main Loop
-connect_wifi()
-sync_time()
-connect_mqtt()
-
-TARGET_TEMP = 45.0  # Zieltemperatur in °C
-pid = PID(Kp=2.0, Ki=0.1, Kd=0.5, setpoint=TARGET_TEMP)
-
-#pid = PID(Kp=1.5, Ki=0.05, Kd=0.3, setpoint=TARGET_HUM)
-#power = pid.compute(avg_hum)
-
-oled.fill(0)
-oled.text("Starte...", 0, 24)
-oled.show()
-time.sleep(2)
+def main():
+    import machine
+    import ssd1306
+    run(machine, None, ssd1306, load_config)
 
 
-while True:
-  ensure_mqtt = True
-  try:
-    client.ping()
-  except:
-    connect_mqtt()
-
-
-  print("Reading sensors...")
-  avg_temp, avg_hum = get_average_values(SENSORS)
-  print("🌡 Durchschnitt: Temp = {:.1f}°C | Feuchte = {:.1f}%".format(avg_temp, avg_hum))
-  heater_power = pid.compute(avg_temp)
-  set_heater_power(heater_power)
-  #set_fan_power(power)
-  print("🔥 Heizleistung: {:.1f}%".format(heater_power))
-  #FAN 
-  # Lüfterbedingung prüfen
-  sensor_hot = any_sensor_over_threshold(SENSORS)
-  if heater_power > 0 or sensor_hot:
-    fan_power = 100  # volle Leistung
-  else:
-    fan_power = 0    # Lüfter aus
-  
-  set_fan_power(fan_power)
-
-
-
-
-
-  payload = {
-    "timestamp": "{}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(*time.localtime()[:6]),
-    "sensors": [safe_measure(s) for s in SENSORS],
-    "avg_temp": avg_temp,
-    "avg_hum": avg_hum,
-    "heater_power": heater_power
-  }
-  msg = ujson.dumps(payload)
- 
-  warning = "Ueberhitzung" if avg_temp > 60 else None
-  update_display(avg_temp, heater_power, fan_power,avg_hum, warning)
-
-
-  print("Publishing:", msg)
-  client.publish(MQTT_TOPIC, msg)
-  time.sleep(5)
+if __name__ == '__main__':
+    main()

@@ -1,56 +1,68 @@
 # Open work checklist
 
-Recorded 2 November 2026 against firmware `09fa5d7`. All items remain open; this documentation update changes no firmware or hardware.
+Updated 2 November 2026. The original findings were recorded against firmware `09fa5d7`; see [CODE_REVIEW.md](CODE_REVIEW.md). Software changes below are implemented locally and exercised with CPython mocks. No Sunlu appliance or ESP32 hardware is available. A checked software item does not close its physical acceptance criteria.
 
-The fork's GitHub Issues feature was disabled when this record was prepared. This file preserves actionable findings and acceptance criteria; these are not numbered GitHub Issues. See [the review](CODE_REVIEW.md) for source locations and mock reproduction details.
+## 1. Fail-safe startup, shutdown and sensor interlocks
 
-## 1. Critical: establish fail-safe startup, shutdown and sensor interlocks
+- [x] Initialise active-high heater/fan GPIOs low and PWM explicitly off before configuration/display/network setup.
+- [x] Define idle/heating/cooling/fault states; require all four valid sensors and fresh readings. Reject invalid values and detect late control iterations.
+- [x] Shut heat off on any individual sensor at or above the bench overtemperature limit; latch faults until deliberate controller restart.
+- [x] Add exception/interrupt cleanup, independent heater-off attempts and full-fan fault demand. Faults do not clear on sensor/network recovery.
+- [x] Exercise startup, partial initialisation, configuration/display/network exceptions, Ctrl-C, total/partial/invalid/stale readings, slow acquisition, control gaps and hidden hotspots with host mocks.
+- [ ] Measure boot/reset/output polarity and independent hardware default-off behaviour on the exact board/power stage.
+- [ ] Establish actual thermal limits, fan cooling/interlock requirements and independent protection. Software cannot preempt a stuck driver/interpreter; assess watchdog and independent heater cutoff using actual hardware.
+- [ ] Complete MicroPython runtime and supervised dummy-output/electrical fault checks.
 
-PWM currently has no explicit startup duty. All-sensor failure can crash formatting, partial failures reduce coverage silently, and the >60 °C display warning does not override heating. Exceptions or interruptions have no guaranteed heat shutdown.
+Acceptance: host checks establish software transitions only. This issue remains open for physical startup/reset/fault proof and protection design.
 
-- [ ] Initialise heat outputs explicitly off before display/network operations; verify polarity and hardware boot/reset default-off behaviour.
-- [ ] Define idle/heating/cooling/fault states, required sensor coverage, freshness and invalid-value checks.
-- [ ] Enforce individual-sensor overtemperature shutdown with an appropriate latched fault/reset policy.
-- [ ] Guarantee heat shutdown on sensor, display, network and unexpected software failures, with a defined cooling policy.
-- [ ] Preserve/verify independent thermal and electrical protection; document limits from actual hardware.
-- [ ] Test cold boot, reset, Ctrl-C, exceptions, missing/stale/partial readings, hotspot and overtemperature cases using dummy outputs first.
+## 2. Sampling, PID timing and fan cooldown
 
-Acceptance: automated/mock checks establish software state transitions; physical measurements separately demonstrate safe outputs during boot/reset/faults. Do not equate mock success with validated heater operation.
+- [x] Acquire each sensor once per scheduled interval; reuse a timestamped snapshot for control, display and telemetry. Space acquisitions from previous completion.
+- [x] Provide a two-second startup delay and at least five seconds between acquisition completion and the next start.
+- [x] Implement elapsed-time PID, derivative on measurement, bounded conditional integration and reset rules. No positive heat demand at/above target.
+- [x] Implement five-minute cooldown after the last positive heat request and full-fan demand while any valid reading exceeds 30 C.
+- [x] Test elapsed-time equivalence, prolonged cold error, overshoot, cooldown, clock rollover, repeated-snapshot reuse, sampling count and sensor-fault transitions.
+- [ ] Tune gains, temperatures and cooldown using the identified hardware; assess fan feedback/airflow protection.
+- [ ] Verify actual DHT timing/accuracy and thermal/fan behaviour on the selected MicroPython build and bench setup.
 
-## 2. High: correct sampling, PID timing and fan cooldown
+Acceptance: original numerical windup and repeated-read cases have host regression coverage. Hardware tuning and thermal/fan acceptance remain open.
 
-Sensors can be measured three times per iteration without appropriate spacing. PID has no elapsed-time handling or integral bound. `fan_run_until = 300` and `adapt_pid()` are unused.
+## 2a. SHT30/SHT31 sensor support
 
-- [ ] Take one validated sensor snapshot per scheduled interval and reuse it for control, display and telemetry.
-- [ ] Respect DHT22 measurement spacing or replace the driver/sensor design with a verified alternative.
-- [ ] Implement elapsed-time PID, anti-windup and reset behaviour; tune only for identified hardware.
-- [ ] Implement and document actual fan cooldown; assess airflow feedback/interlock requirements.
-- [ ] Test variable loop timing, prolonged cold error, overshoot, cooldown and sensor-failure transitions.
+- [x] Add SHT3x single-shot driver with both CRC checks, explicit conversion delay and invalidated cached values on failed acquisitions.
+- [x] Retain DHT22 support; select sensor family and an explicit one-to-four SHT inventory in local configuration.
+- [x] Support direct addresses 0x44/0x45 or TCA9548A channels, rejecting duplicate/invalid routes. Deselect mux branches on success and failure before OLED access.
+- [x] Reuse existing coverage, freshness and overtemperature interlocks without raising temperature limits. Missing configured sensors remain faults.
+- [x] Test conversions, CRCs, short reads, missing sensors, partial writes, mux failures, configuration errors, latched faults and the shared display bus on the host.
+- [ ] Check actual SHT module identity/address straps, 3.3 V supply/pull-ups, I2C timing and measurement accuracy on the ESP32 bench.
+- [ ] Test physical sensor removal, CRC/bus errors, stuck branches and mux reset/recovery. Confirm sensor quantity/placement and hot/dry performance before appliance use.
 
-Acceptance: reproducible numerical tests eliminate the documented windup case, measurement-count checks confirm one sample per interval, and physical thermal/fan validation is reported separately.
+Acceptance: host checks pass; no physical SHT/mux or MicroPython validation is claimed.
 
-## 3. High: prevent network failures from blocking safe control
+## 3. Network failures and control responsiveness
 
-Wi-Fi can wait indefinitely; MQTT startup, reconnect and publish can fail without output cleanup. `ping()` writes a packet without processing the reply in this application. Retained `online` is not proof of healthy control.
+- [x] Replace blocking startup/reconnect/publish calls with a cooperative telemetry-only MQTT client: nonblocking socket/poll steps, bounded transfer sizes, per-phase deadlines and retry backoff.
+- [x] Reject broker hostnames and require numeric IPv4, removing network DNS from the control path. Remove startup NTP dependency.
+- [x] Define connectivity-loss policy: local control continues; failed telemetry retries independently. Unexpected adapter failures escaping its handler shut heat down.
+- [x] Consume and validate CONNACK/PUBACK; use unique device IDs/topics, current control/fault state, non-retained telemetry and offline will. No retained online safety claim.
+- [x] Add ignored local credentials configuration, optional MQTT authentication and explicit trusted-bench/plain-TCP transport limitation.
+- [x] Inject missing Wi-Fi, connect/send/ack stalls, rejected connections, fragmented/wrong acknowledgements, failed publication, link loss and reconnect. Verify sensing continues during Wi-Fi failure and current fault state is published after reconnect.
+- [ ] Validate on ESP32 MicroPython 1.26.0 and an actual MQTT broker, including nonblocking connect/poll error behaviour and Wi-Fi driver latency. Host socket mocks do not prove real-time deadlines or interoperability.
+- [ ] Measure worst-case sensing/display/network driver latency, control cadence and shutdown timing. Define any required hardware watchdog response after measurement.
+- [ ] Select secure transport/credentials policy before use beyond an isolated trusted bench. TLS is not implemented.
 
-- [ ] Bound DNS/connect/retry/publish operations and define an explicit connectivity-loss policy.
-- [ ] Separate telemetry/recovery from time-critical sensing and safe output control.
-- [ ] Process broker responses and report actual connection/control/fault states.
-- [ ] Support unique device IDs and local credential handling; document authentication/TLS choices.
-- [ ] Test unavailable Wi-Fi/broker, dropped connections, failed publication and recovery without stale or unintended heater enable.
-
-Acceptance: fault-injection checks demonstrate control deadlines and output policy; live network tests confirm reconnect and status behaviour. Software recovery must not silently clear a latched thermal fault.
+Acceptance: host protocol/fault-injection checks pass. Live network tests, runtime deadline measurements and deployment transport choices remain open.
 
 ## 4. Hardware blocker: identify S4 Pro interfaces and confirm SuperMini suitability
 
-The Pro has two independent heating zones; the existing program provides one heater output. No verified factory connector map, power interface or controller supply exists here.
+No hardware-dependent work is claimed complete. S4 Pro has two independent heating zones; the current software remains a single-zone bench controller.
 
-- [ ] Record the exact appliance and PCB revisions, both board faces, component markings and complete harness map.
-- [ ] Identify supply/isolation boundaries, heater and fan topology, sensors, interlocks and protection.
-- [ ] Investigate a read-only factory communication capture before selecting bridge or replacement control.
-- [ ] Identify the exact ESP32 SuperMini chip/board; assess GPIO budget, strapping/USB conflicts and safe power arrangements.
-- [ ] Design two-zone control/fault handling if replacing factory logic; establish fan channel requirements from hardware.
-- [ ] Publish an evidence-backed schematic, connector pinout, parts list and validated wiring procedure.
-- [ ] Complete dummy-load and supervised physical fault tests; retain factory protection.
+- [ ] Record exact appliance/PCB revisions, both board faces, markings and harness map.
+- [ ] Identify supplies/isolation, heater/fan topology, sensors, interlocks and protection.
+- [ ] Investigate read-only factory communications before choosing bridge/replacement control.
+- [ ] Identify exact ESP32 SuperMini chip/board, GPIO budget, strapping/USB conflicts and safe power.
+- [ ] Design independent two-zone control/fault handling and fan channel requirements from evidence.
+- [ ] Publish verified schematic, connector pinout, parts list and wiring procedure.
+- [ ] Complete dummy-load and supervised physical faults while retaining factory protection.
 
-Acceptance: the wiring guide names exact supported revisions and separates observed, inferred and measured facts. Video component close-ups and plausible C3 capability do not constitute verified compatibility. Required evidence and teardown references are in [hardware research](docs/HARDWARE_RESEARCH.md).
+Acceptance: supported revisions and observed/inferred/measured facts must be explicit. See [hardware research](docs/HARDWARE_RESEARCH.md).

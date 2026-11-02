@@ -1,6 +1,6 @@
 # S4 Pro hardware research and ESP32 integration
 
-Research status: 2 November 2026. This document records findings and investigation requirements, not a validated wiring procedure. The current firmware is unchanged from `09fa5d7`.
+Research status: 2 November 2026. This document records findings and investigation requirements, not a validated wiring procedure. The original research reviewed firmware `09fa5d7`; subsequent software-only fixes are tracked in [the checklist](../ISSUES.md). Hardware interfaces and compatibility remain unverified.
 
 ## S4 and S4 Pro are different targets
 
