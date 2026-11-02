@@ -2,11 +2,11 @@
 
 Experimental MicroPython firmware for an ESP32-based filament dryer controller: four temperature/humidity sensors, an OLED display, heater and fan control signals, and MQTT telemetry.
 
-**Status: prototype.** The code defines the ESP32 connections, but this repository does **not** contain a verified wiring diagram for the original SUNLU S4 electronics. It also has control and fault-handling defects that must be fixed before operating a heater. Start with the low-voltage bench setup below, with the dryer and power stages disconnected.
+**Status: bench-development firmware, not validated for an appliance.** Software fault handling has been implemented and regression-tested with mocked hardware. There is still no verified S4/S4 Pro power-board wiring. Normal boot is monitoring-only and heater duty stays zero. Keep loads/power drivers disconnected until the hardware is identified and physically tested.
 
-This guide describes firmware commit `09fa5d7`. Pin assignments and behaviour come from [main.py](main.py) and [ssd1306.py](ssd1306.py). The suggested bench components and wiring have not been physically tested with this project. See [CODE_REVIEW.md](CODE_REVIEW.md) for the review findings and validation limits.
+This guide describes the refactored bench firmware. [CODE_REVIEW.md](CODE_REVIEW.md) preserves the historical findings against original commit `09fa5d7` and records which software paths have been addressed. [Host tests](tests/README.md) exercise the new implementation; no ESP32, MicroPython runtime or physical dryer has been tested.
 
-**S4 Pro research:** the S4 and S4 Pro are separate hardware targets. The Pro has two independently heated chambers; this firmware exposes only one heater output. Neither appliance has verified compatibility here. See [S4 Pro hardware research and ESP32-C3 assessment](docs/HARDWARE_RESEARCH.md) for teardown timestamps, evidence requirements and proposed investigation steps, and [the open work checklist](ISSUES.md) for unresolved work. No firmware fixes or Pro conversion have been implemented.
+**S4 Pro research:** the S4 and S4 Pro are separate hardware targets. The Pro has two independently heated chambers; this firmware exposes only one heater output. Neither appliance has verified compatibility here. See [S4 Pro hardware research and ESP32-C3 assessment](docs/HARDWARE_RESEARCH.md) for teardown timestamps, evidence requirements and proposed investigation steps, and [the open work checklist](ISSUES.md) for unresolved work. Software fixes are implemented for the original single-heater bench interface. Pro conversion and SuperMini pin assignments remain unimplemented.
 
 ## Contents
 
@@ -25,33 +25,38 @@ This guide describes firmware commit `09fa5d7`. Pin assignments and behaviour co
 
 ## What it does
 
-On startup, the program initialises peripherals, connects to Wi-Fi, attempts NTP clock synchronisation, and connects to MQTT. The control loop starts only after Wi-Fi and MQTT connection succeed.
+Normal boot monitors four DHT22 sensors and an external 128 × 64 SSD1306 OLED. With local Wi-Fi/broker settings it also publishes MQTT telemetry. Networking is optional for monitoring; it is required for an explicitly armed bench heating run.
 
-Each loop:
+Each cycle:
 
-1. Attempts an MQTT ping, reconnecting if that call raises an exception.
-2. Reads the DHT22 sensors and averages successful temperature and relative-humidity readings.
-3. Calculates heater duty using a PID controller with a fixed **45 °C** target.
-4. Requests full fan output when heater demand is above zero **or any readable sensor is above 30 °C**; otherwise requests fan off.
-5. Displays readings and output demands on the OLED, with a warning if the **average** temperature exceeds **60 °C**.
-6. Publishes sensor data to MQTT and sleeps for five seconds.
+1. Commands heater duty **zero** and fan demand **100%** before sensor, display or network work.
+2. Measures each configured DHT22 exactly once and shares that snapshot across control, display and telemetry.
+3. Rejects failed, non-finite, out-of-range or stale readings; **all configured sensors are required**.
+4. Latches a fault if any individual sensor reaches **60 °C**, regardless of the mean.
+5. Updates display/telemetry while the heater remains inhibited.
+6. Checks sample freshness again before allowing output; a requested heating run also needs healthy networking.
+7. Applies fan demand before heater demand, then waits at least 2.5 seconds before the next measurement round. A supervisor checks freshness every 50 ms during that wait.
 
-The actual interval exceeds five seconds because measurements and networking add time. Sensors are measured again for the fan check and telemetry, so these are not all the same measurement snapshot.
+An explicitly armed run uses elapsed-time PID at a **45 °C** target, bounded/conditional integral accumulation and zero demand at or above target. This is not hardware-tuned. Fan demand is full during heating, whenever any sensor is above 30 °C, and for **five minutes from the last nonzero heater demand**. A fault or interruption commands heat off and full fan demand.
+
+Faults latch for the current run: restored readings or MQTT reconnection do not clear them. A fresh run starts a new controller, but must be deliberately armed again. A normal boot/reset never arms, even if local heating permission is True.
 
 | Feature | Current implementation |
 | --- | --- |
-| Sensing | Four independent DHT22 inputs; averages successful reads |
-| Temperature control | One heater output; fixed target in source |
-| Fan control | One output; main loop requests 0% or 100% |
-| Display | External 128 × 64 SSD1306 I²C OLED, with German labels |
-| Networking | Wi-Fi, startup NTP attempt and MQTT publishing |
-| Remote commands | None: no MQTT subscription, start/stop command or remote setpoint |
-| Home Assistant | Telemetry can be consumed manually; no discovery or supplied configuration |
-| Drying programmes | No material presets, duration timer or humidity-based completion |
-| Original S4 controls | No implementation for its display, buttons, sensors or controller protocol |
-| Safety shutdown | No complete software fail-safe or independent protection design |
+| Sensor coverage | Four separate DHT22 inputs; one snapshot per cycle; all required |
+| Heater control | One active-high PWM interface; bench PID, gated by explicit permission and per-run arming |
+| Fan control | One active-high output; full demand for heat/hot readings/cooldown/faults |
+| OLED | External 128 × 64 SSD1306 I²C display with English state/fault labels |
+| MQTT | Optional monitoring; QoS 1 telemetry/availability with socket timeout and retry backoff |
+| Remote commands | None; no MQTT arming, start/stop or setpoint subscription |
+| Home Assistant | Manual telemetry consumption; no discovery/dashboard supplied |
+| Drying programmes | No material presets, cycle duration or humidity-based finish |
+| Original S4/Pro electronics | No verified connector map, protocol or factory display/sensor support |
+| Pro zones | Not implemented; existing bench interface has only one heater channel |
 
-The loop runs continuously after startup. There is no drying-cycle start button or automatic finish. Humidity is reported but does not control heating.
+**Network policy:** this is an interlocked synchronous design, not an independent network thread. Heater output is deliberately paused during every peripheral/network operation. Socket calls have a one-second timeout, but DNS and some firmware calls may still stall. An armed run starts an eight-second watchdog; a stall should reboot into monitoring only. The actual watchdog and GPIO reset behaviour require an ESP32 test. Monitoring mode does not start a watchdog, preserving REPL/file-upload usability.
+
+This interruption changes effective heater duty and must be considered during physical tuning. It does not establish that 1 kHz PWM is suitable for the appliance's power stage.
 
 ## Parts needed
 
@@ -70,7 +75,7 @@ These parts match the software interfaces. They are not a verified shopping list
 | 1 set | Prototyping board, jumper wires and connectors | Low-voltage bench work only. |
 | Optional: 2 each | LEDs and 1 kΩ series resistors | Dummy indicators for the heater/fan output pins, instead of power drivers. |
 | 1 | Computer with Python, Git and serial access | Installation examples use `mpremote`. |
-| 1 each | 2.4 GHz Wi-Fi network and reachable MQTT broker | Both are required to reach the unmodified control loop. |
+| 1 each | 2.4 GHz Wi-Fi network and reachable MQTT broker | Optional for monitoring; both required for explicit heating arming. |
 
 GPIO numbers are chip numbers, not physical header positions or arbitrary `D` labels. GPIO 2 and 15 are strapping pins; attached circuitry can affect reset/programming. GPIO 16 can be reserved on PSRAM-equipped boards. Check the exact board/module, or change the pin assignments and wiring together. See the [Espressif module datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-wroom-32_datasheet_en.pdf).
 
@@ -90,7 +95,7 @@ Select these only after identifying the actual loads and electronics. The reposi
 
 ## ESP32 pin assignments
 
-Taken directly from `main.py`:
+Configured in [config.py](config.py); these are the unchanged classic-ESP32 bench assignments:
 
 | Function | ESP32 GPIO | Connection / signal |
 | --- | --- | --- |
@@ -193,90 +198,107 @@ Treat appliance power circuitry as potentially mains-referenced until establishe
 
 ## Software installation
 
-Work on the bench with **no heater, fan or power driver connected**. Copying `main.py` to the board enables execution after a normal boot.
+Use a disconnected low-voltage bench with **no heater, fan or power driver attached**. Normal boot inhibits the heater, but fan-control signals are still driven. This is MicroPython, not Arduino/ESPHome; there is no PlatformIO build.
 
-### 1. Install MicroPython
+### 1. Install the board's MicroPython firmware
 
-Use stable firmware for your exact board/chip. A conventional classic ESP32-WROOM development board normally uses [ESP32_GENERIC firmware](https://micropython.org/download/ESP32_GENERIC/). Follow its board-specific flashing instructions, including image address and bootloader procedure. Flash erasure removes existing files.
+For a conventional classic ESP32-WROOM board, start at [ESP32_GENERIC](https://micropython.org/download/ESP32_GENERIC/). Follow the exact board's flashing instructions and image address; flash erasure removes existing files. See the [installation guide](https://docs.micropython.org/en/v1.26.0/esp32/tutorial/intro.html). No firmware version has been physically validated here.
 
-This is MicroPython, not Arduino or ESPHome; there is no PlatformIO build. No tested firmware version is pinned in this repository. See the [official ESP32 installation guide](https://docs.micropython.org/en/v1.26.0/esp32/tutorial/intro.html).
+### 2. Get the project and tools
 
-### 2. Get the project and host tool
-
-```sh
+~~~sh
 git clone https://github.com/Soopahfly/SUNLU_S4_ESP_Base.git
 cd SUNLU_S4_ESP_Base
 python -m pip install mpremote
 mpremote connect list
-```
+~~~
 
-Examples use Windows port `COM5`: replace it with your board's port. Linux might use `/dev/ttyUSB0`, macOS `/dev/cu.usbserial-...`. Close other serial terminals before using the port.
+If reviewing a firmware-fix PR, check out its branch before copying files. Examples use Windows port COM5; substitute the real port (Linux might use /dev/ttyUSB0). If the command is not on PATH, use python -m mpremote. Close other serial sessions first.
 
-If `mpremote` is not found after installation, use `python -m mpremote` in place of `mpremote` in these commands.
+### 3. Copy every runtime module
 
-### 3. Install dependencies
-
-```sh
-mpremote connect COM5 mip install umqtt.simple
-mpremote connect COM5 fs cp ssd1306.py :ssd1306.py
-mpremote connect COM5 exec "import network, machine, dht, ujson, utime, ntptime, ssd1306; from umqtt.simple import MQTTClient; print('Imports OK')"
-```
-
-`mpremote mip` downloads through the host; the board need not already be on Wi-Fi. `umqtt.simple` comes from [micropython-lib](https://github.com/micropython/micropython-lib/tree/master/micropython/umqtt.simple). Other imports depend on the firmware. If `ntptime` is missing, use `mpremote connect COM5 mip install ntptime`, then repeat the check. Missing `machine` or `dht` usually indicates an unsuitable runtime/firmware.
-
-See [mpremote](https://docs.micropython.org/en/v1.26.0/reference/mpremote.html) and [package management](https://docs.micropython.org/en/v1.26.0/reference/packages.html). Record firmware and dependency versions when validating hardware.
-
-### 4. Configure and run manually
-
-Edit your local `main.py` using the configuration section. Test the peripherals first, then run without installing an automatic startup file:
-
-```sh
-mpremote connect COM5 run main.py
-```
-
-This executes the real control program and **does not disable PWM**. Keep power drivers and loads disconnected.
-
-### 5. Install automatic startup after bench checks
-
-```sh
+~~~sh
+mpremote connect COM5 fs cp config.py control.py hardware.py runtime.py telemetry.py ssd1306.py :
 mpremote connect COM5 fs cp main.py :main.py
+mpremote connect COM5 exec "import config, control, hardware, runtime, telemetry, ssd1306; print('Imports OK')"
+~~~
+
+Importing main as a module does not start hardware. Copying only main.py is insufficient after this refactor. The original monolithic installation is incompatible with the new module layout.
+
+To enable networking, install the official MQTT library:
+
+~~~sh
+mpremote connect COM5 mip install umqtt.simple
+~~~
+
+Use umqtt.simple 1.8.1 or a compatible implementation providing connect(timeout=...) and acknowledged QoS 1 publication. An incompatible API faults rather than falling back to unbounded connections. The library has not been tested on a board here. The host-side installer fetches packages without requiring board Wi-Fi. See [mpremote](https://docs.micropython.org/en/v1.26.0/reference/mpremote.html) and [package management](https://docs.micropython.org/en/v1.26.0/reference/packages.html).
+
+### 4. Supply optional private settings
+
+Copy settings.example.py to settings.py **locally**, edit it and upload:
+
+~~~sh
+mpremote connect COM5 fs cp settings.py :settings.py
+~~~
+
+settings.py is ignored by Git. Defaults need no credentials for local monitoring. NTP is no longer imported or run: scheduling uses wrap-safe ticks, and telemetry uses a sample tick counter rather than claiming a UTC timestamp.
+
+### 5. Run monitoring
+
+~~~sh
+mpremote connect COM5 run main.py
+~~~
+
+For normal startup from the installed file:
+
+~~~sh
 mpremote connect COM5 reset
 mpremote connect COM5 repl
-```
+~~~
 
-These install/start the prototype; they do not make it suitable for heater operation. A normal boot runs `main.py`; see the [boot sequence](https://docs.micropython.org/en/v1.26.0/reference/reset_boot.html).
+Normal boot is always monitoring-only. See the [MicroPython boot sequence](https://docs.micropython.org/en/v1.26.0/reference/reset_boot.html).
+
+### 6. Explicit heating mode is for supervised dummy-output testing
+
+Keep power stages/loads disconnected. The two gates are a local ALLOW_HEATING=True override **and** an explicit per-run argument:
+
+~~~sh
+mpremote connect COM5 exec "import main; main.run(enable_heat=True)"
+~~~
+
+This command can drive the bench heater-control GPIO, not merely simulate it. Configured Wi-Fi and MQTT must become healthy before nonzero heater output. The physical power interface, protection and PID tuning remain unverified. Do not use this as an S4 installation procedure.
+
+An armed run enables a watchdog that cannot be stopped once started. After an interruption or fatal exception it may reset the board; normal reboot returns to unarmed monitoring. Monitoring itself does not start the watchdog. See [MicroPython WDT](https://docs.micropython.org/en/v1.26.0/library/machine.WDT.html).
 
 ## Configuration
 
-Settings are embedded in `main.py`; no separate configuration file, web interface or captive portal exists. Keep real Wi-Fi credentials out of public commits.
+Tracked defaults live in [config.py](config.py); private overrides belong in ignored settings.py. There is no web setup or remote arming command. GPIO numbers are unchanged from the original classic-ESP32 prototype.
 
-| Setting | Current value | Where / what to change |
+| Setting | Default | Meaning |
 | --- | --- | --- |
-| Wi-Fi | `Wokwi-GUEST`, empty password | Arguments to `sta_if.connect(...)` inside `connect_wifi()` |
-| Broker | `mqtt.local` | `MQTT_BROKER`: resolvable hostname or broker IP |
-| Client ID | `sunlu-controller` | `MQTT_CLIENT_ID`: unique per controller |
-| Sensor topic | `sunlu/sensors` | `MQTT_TOPIC` |
-| Availability topic | `sunlu/status` | `MQTT_STATUS`: use separate topics for separate devices |
-| Target | `45.0` °C | `TARGET_TEMP`: code default, not a validated material profile |
-| PID gains | `2.0`, `0.1`, `0.5` | `PID(Kp=..., Ki=..., Kd=...)`: not tuned for an identified heater |
-| Sensors | `[15, 2, 4, 16]` | `SENSOR_PINS`: order also sets MQTT sensor order |
-| OLED | SDA 21, SCL 22; 128 × 64; `0x3C` | I²C/display construction |
-| Outputs | Heater 25, fan 26; 1000 Hz | `PWM(...)`: frequency changes require driver/load verification |
-| Fan rule | Any sensor strictly above 30 °C | Default `threshold` in `any_sensor_over_threshold()` |
-| Display warning | Average strictly above 60 °C | `warning = ...`: **does not switch heat off** |
-| Loop sleep | 5 seconds | Final `time.sleep(5)`: actual interval is longer |
+| ALLOW_HEATING | False | Local permission only; normal boot still never arms |
+| TARGET_TEMP / MAX_TEMP | 45 / 60 °C | PID target and individual-sensor fault threshold; not validated material/safety limits |
+| SENSOR_PINS | (15, 2, 4, 16) | All configured sensors are required; order also sets telemetry order |
+| HEATER_PIN / FAN_PIN | 25 / 26 | Active-high bench control interfaces |
+| PWM_FREQUENCY | 1000 Hz | Must be matched to identified power electronics before physical use |
+| OLED_SDA / OLED_SCL / OLED_ADDRESS | 21 / 22 / 0x3C | External SSD1306 |
+| SAMPLE_INTERVAL_MS | 2500 | Minimum wait after each cycle, ensuring DHT measurement spacing |
+| MAX_SAMPLE_AGE_MS | 4000 | Maximum age from the start of the sampling round |
+| MAX_CONTROL_GAP_MS | 8000 | Longer gaps latch a fault even if the next sample is fresh |
+| FAN_COOL_TEMP / COOLDOWN_MS | 30 °C / 300000 | Hot-sensor rule and cooldown from last nonzero heat demand |
+| PID_KP / PID_KI / PID_KD | 2 / 0.1 / 0.5 | Now elapsed-time based; old gains must not be treated as physically tuned |
+| WIFI_SSID / WIFI_PASSWORD | empty | Leave unset for network-free monitoring |
+| MQTT_BROKER / MQTT_PORT | empty / 1883 | Broker address; numeric IP avoids hostname-resolution dependency |
+| MQTT_USER / MQTT_PASSWORD | None | Optional local byte-string credentials, as shown in the example settings |
+| MQTT_CLIENT_ID | sunlu-controller | Hardware identifier appended automatically |
+| MQTT_TOPIC / MQTT_STATUS | sunlu/sensors / sunlu/status | Give each device a unique topic namespace |
+| MQTT_TIMEOUT_S / MQTT_INTERVAL_MS | 1 / 5000 | Socket timeout and telemetry interval |
+| WIFI_TIMEOUT_MS / NETWORK_RETRY_MS | 15000 / 10000 | Polled Wi-Fi attempt timeout and retry backoff |
+| WATCHDOG_MS | 8000 | Used only for explicitly armed runs; physical reset operation untested |
 
-For example, replace the existing Wi-Fi connection line with:
+Pin conflicts, invalid targets and invalid control timing are rejected. Data must be finite: DHT22 temperatures in -40…80 °C and humidity in 0…100 %RH. A failure or invalid value at **any** required sensor faults the run.
 
-```python
-sta_if.connect('YOUR_WIFI_SSID', 'YOUR_WIFI_PASSWORD')
-```
-
-`Wokwi-GUEST` is a simulator-style default, not a setup access point provided by this firmware. No Wokwi circuit file is included.
-
-The MQTT constructor supplies no authentication, TLS or custom port; the standard library defaults to plain MQTT on TCP 1883. An authenticated broker needs constructor changes and local credential handling. A `.local` name might not resolve; a known IP avoids that dependency.
-
-NTP failure is printed and startup continues. After a successful standard NTP sync, timestamps are UTC; there is no timezone/daylight-saving conversion or timezone marker in the payload.
+MQTT currently uses plain TCP; TLS is not implemented. Username/password support does not encrypt traffic. Keep credential files private. A successful QoS 1 PUBACK establishes the last acknowledged broker interaction, not continuous proof of connectivity or physical heater state.
 
 ## First bench run
 
@@ -313,12 +335,12 @@ For the interactive Python snippets below, open `mpremote connect COM5 repl`. At
    mosquitto_sub -h YOUR_BROKER_IP -t "sunlu/#" -v
    ```
 
-6. Run the configured program manually and inspect serial output, OLED readings and MQTT JSON. OLED labels include `Heizung` (heater), `Luefter` (fan), `Feuchte` (humidity) and `WARNUNG` (warning).
+6. Run the configured program manually and inspect serial output, OLED readings and MQTT JSON. The OLED reports MONITOR ONLY or the current control state; faults show FAULT - HEAT OFF and the latched reason.
 7. Optional dummy LEDs show output activity. Use suitable test equipment for PWM frequency/duty checks; LED activity does not establish driver compatibility.
 
-The sensor-only check measures once per round. The full program currently repeats measurements too quickly, so passing this check does not establish main-loop reliability.
+The full program also measures once per round and shares those readings. Validate command timing and actual sensor behaviour on the board before drawing hardware conclusions.
 
-**Stopping:** remove load power independently before interrupting any future powered test. Ctrl-C interrupts the bench loop but does not guarantee output shutdown: no cleanup handler exists. To remove automatic startup with all loads disconnected:
+**Stopping:** remove load power independently before interrupting any future powered test. Ctrl-C runs cleanup that commands heat off and full fan demand. An armed watchdog can subsequently reset into monitoring only. Neither software cleanup nor these tests prove that an external power stage switches off. To remove automatic startup with all loads disconnected:
 
 ```sh
 mpremote connect COM5 fs rm :main.py
@@ -327,97 +349,111 @@ mpremote connect COM5 reset
 
 ## MQTT messages
 
-### Sensor data: `sunlu/sensors`
+### Sensor data: sunlu/sensors
 
-The current `publish()` uses library defaults: QoS 0, not retained. This is an illustrative payload, not a captured hardware result:
+Telemetry now uses **QoS 1**, not retained. An illustrative monitoring payload:
 
-```json
+~~~json
 {
-  "timestamp": "2026-11-02 06:30:00",
+  "sampled_at_ms": 2500,
   "sensors": [
-    {"temp": 43.0, "humidity": 30.0},
-    {"temp": 44.0, "humidity": 32.0},
-    {"temp": 45.0, "humidity": 31.0},
-    {"temp": 44.0, "humidity": 31.0}
+    {"temp": 20, "humidity": 40},
+    {"temp": 20, "humidity": 40},
+    {"temp": 20, "humidity": 40},
+    {"temp": 20, "humidity": 40}
   ],
-  "avg_temp": 44.0,
-  "avg_hum": 31.0,
-  "heater_power": 2.6
+  "valid_count": 4,
+  "avg_temp": 20,
+  "avg_hum": 40,
+  "max_temp": 20,
+  "state": "idle",
+  "fault": null,
+  "heater_power": 0,
+  "fan_power": 0,
+  "armed": false,
+  "network_ready": true,
+  "heater_inhibited": true
 }
-```
+~~~
 
-| Field | Meaning |
-| --- | --- |
-| `timestamp` | RTC time: UTC after successful standard NTP sync, potentially incorrect after failed sync |
-| `sensors` | Four entries in `SENSOR_PINS` order; °C and %RH |
-| `avg_temp`, `avg_hum` | Means of earlier successful reads, excluding failures |
-| `heater_power` | Requested duty percentage, **not measured watts** |
+Temperatures are °C; humidity is %RH. All readings and summaries use one sampling round. Failed/invalid readings become null; valid_count makes reduced coverage visible, but reduced coverage never permits heating.
 
-Failed individual telemetry reads produce `{"temp": null, "humidity": null}`. Total failure in the earlier averaging step can crash the loop before publication. Repeated reads mean individual entries need not average to the published means. Fan demand and warning state are not included.
+sampled_at_ms is the board's wrapping tick counter, **not UTC or permanent uptime**. The old timestamp field was removed. Consumers should use reception time for a wall-clock history.
 
-### Availability: `sunlu/status`
+heater_power and fan_power are control demands, not measured power, airflow or GPIO duty averaged over a cycle. heater_inhibited is True because MQTT work occurs while heater output is zero. State/demand fields describe the controller's pre-publication decision; a fault during that very publication or the post-I/O freshness check may be reported only on a later successful publish. Never use telemetry as the physical safety interlock.
 
-- Retained `online` is published on MQTT connection.
-- Retained `offline` is configured as the Last Will, sent by the broker after it detects an ungraceful disconnection.
-- Keepalive is 60 seconds.
+### Availability: sunlu/status
 
-Availability reports broker connection status, not proof of healthy control or a safe heater state. There is no explicit graceful-shutdown status publish. In `umqtt.simple`, `ping()` sends a packet; this application does not process responses with `check_msg()` or `wait_msg()`.
+Retained online is published after connection; retained offline is the configured broker Last Will. Both use QoS 1, with a 60-second keepalive. Regular acknowledged publications consume broker responses without relying on a write-only ping. A failed connection/publication closes the socket and schedules retry.
 
-There is no command topic. Publishing a target or stop message does not change operation.
+An explicitly armed run latches a network error/loss; reconnecting cannot clear it. Monitoring can reconnect automatically. Availability remains broker connection status, not proof of healthy control. There is no guaranteed graceful offline publish during fault cleanup, which deliberately avoids network I/O.
+
+There is no command topic. MQTT cannot arm, reset faults, start/stop a cycle or change the target.
 
 ## Known limitations and faults
 
-These issues are present in the reviewed code. **Documentation does not fix them.** See [the review](CODE_REVIEW.md) for reproduction details and proposed remedies.
-
-| Issue | Consequence |
+| Safeguard | Current software behaviour / remaining limit |
 | --- | --- |
-| PWM constructors omit explicit zero duty | Startup is not guaranteed off. The ESP32 MicroPython reference documents default duty 512/1023; verify the actual firmware and implement safe initialisation. |
-| No outer fault handler or guaranteed cleanup | Exceptions from display, MQTT or sensor processing can leave an earlier command in effect. |
-| All failed sensors return `None` averages | Formatting raises before a controlled shutdown. |
-| Partial failures are excluded from means | Control continues with reduced sensor coverage and no explicit coverage fault. |
-| 60 °C warning is display-only, based on average | Cooler readings can hide hotspots; warning does not override heat demand. |
-| Unbounded PID integral; no elapsed-time handling | Demand can stay high after overshoot; varying loop time changes control behaviour. |
-| Repeated DHT22 reads without two-second spacing | Fan checks and telemetry can encounter errors or unreliable readings. |
-| Network operations share the control path | Startup/reconnection can block or raise without safe shutdown. |
-| No timed cooldown | `fan_run_until = 300` is unused; actual fan logic uses heat demand / sensor temperature. |
-| No fan/airflow feedback | A fan command does not establish airflow. |
-| No watchdog or independent protection design | External protection and firmware fault handling remain necessary. |
+| Startup | Explicit low pin level and zero PWM duty; normal boot never arms. Pre-firmware/reset electrical behaviour is unverified. |
+| Sensor faults | Any missing, invalid, partial or stale coverage latches heat off and full fan demand. Physical sensor accuracy/placement remains unverified. |
+| Overtemperature | Any individual reading at or above MAX_TEMP faults; threshold still needs hardware validation and independent protection. |
+| Cleanup | Exceptions/Ctrl-C command heat off/full fan. A broken driver, API or power component cannot be made safe by software alone. |
+| PID | Elapsed-time terms, conditional/bounded integral and zero at/above target; gains and thermal behaviour are not physically tuned. |
+| Sampling | One shared snapshot; at least 2.5 seconds between sampling rounds. Physical bus/sensor timing has not been measured. |
+| Networking | Heater inhibited around I/O; socket timeout/backoff; armed watchdog intended to reset into monitoring. DNS may still block; no independent real-time network task. |
+| Fan | Five-minute cooldown, hot-sensor rule and full demand on faults/I/O. No measured rotation/airflow feedback or hardware interlock. |
+| OLED | Startup failure exits through heat-off cleanup; runtime display failure latches a fault and sampling continues without display. |
+| Hardware | One bench heater channel; no verified S4/Pro driver, supply, protection, connector map or C3 pin map. |
 
-`adapt_pid()` is never called: the PID uses fixed constructor gains. Humidity PID appears only in commented-out code.
+The software regressions are covered by [host tests](tests/README.md). MicroPython execution, watchdog reset, actual PWM levels, networking, cooling and thermal shutdown must still be tested on hardware. Two-zone Pro control is intentionally pending PCB evidence.
 
-Until corrected and physically validated, use this project for development on a disconnected bench, not unattended drying.
+To run host verification:
+
+~~~sh
+python -m unittest discover -s tests -v
+~~~
+
+A GitHub Actions workflow runs the same standard-library suite on Python 3.11 and 3.14. Host tests do not establish safe appliance operation.
 
 ## Troubleshooting
 
 | Symptom | Checks |
 | --- | --- |
-| `No module named umqtt` | Install `umqtt.simple` onto the board, not with desktop `pip`. |
-| `No module named ssd1306` | Copy the supplied driver to the board root. |
-| Missing `machine` / `dht` | Use appropriate ESP32 MicroPython firmware, not desktop Python. |
-| OLED error / no display | Check supply, SDA 21, SCL 22, module type and address. The display initialises before Wi-Fi. |
-| Endless Wi-Fi dots | Replace `Wokwi-GUEST`; check password, 2.4 GHz network and signal. No timeout exists. |
-| MQTT error | Check IP/DNS, TCP 1883, broker policy and authentication requirements. Successful connection is required before control begins. |
-| DHT timeout/checksum errors | Check type, supply, GPIOs, separate data lines and pull-ups. Test individually; rapid repeat reads are also a code defect. |
-| `NoneType` formatting error | All averaging reads failed. This path does not implement safe heater shutdown. |
-| Flashing fails after wiring sensors | Disconnect peripherals, especially the GPIO 2 pull-up; check the board's boot/strapping procedure. |
-| Invalid pins / peripheral conflict | Verify exact chip/module and schematic; the pin map assumes a classic ESP32 with those GPIOs free. |
-| Controllers disconnect one another | Use unique client IDs and separate topic namespaces. |
-| Wrong timestamp | Check NTP connectivity; local timezone conversion is absent. |
-| Telemetry values differ from averages | Separate measurements are taken for averages and telemetry. |
-| Warning displayed while heat demand stays high | Warning is not an interlock; PID windup is possible. Remove heater power independently. |
+| Missing config/control/hardware/runtime/telemetry module | Upload every runtime module, not only main.py. |
+| Missing umqtt | Install umqtt.simple onto the board; local monitoring does not need it. |
+| Missing machine / dht | Use appropriate ESP32 MicroPython firmware, not desktop Python. |
+| Missing OLED / I²C failure | Check 3.3 V supply, SDA 21, SCL 22, SSD1306 module type and address. |
+| No Wi-Fi/MQTT data | Supply settings.py; check SSID, broker, port and byte-string credentials. Monitoring still works without configured networking. |
+| No heat at boot | Expected: boot is monitoring-only, regardless of ALLOW_HEATING. |
+| Arming is rejected | Both explicit per-run arming and local permission are required, with configured Wi-Fi/MQTT. |
+| sensor_failure | Check every configured sensor, separate data lines, pull-ups and sensor type. Restoring readings does not clear the fault. |
+| overtemperature | Individual sensor reached MAX_TEMP; identify the cause before any fresh run. |
+| stale_sensors / control_gap | Sampling or peripheral/network work exceeded timing limits. Heat stays off. |
+| display_error | Display failed during a run; heat is latched off and sampling continues. |
+| mqtt_error / network_lost / wifi_timeout | Inspect network/API compatibility; reconnection does not rearm a faulted heating run. |
+| Unexpected reset after an armed interruption | The watchdog cannot be stopped once started; reboot returns to monitoring-only. |
+| Flashing fails after sensors are wired | Disconnect peripherals, especially GPIO 2 pull-up; verify board strapping/boot procedure. |
+| Invalid/conflicting pins | Check config.py and the exact chip; classic ESP32 assignments cannot be used unchanged on a C3. |
+| No UTC timestamp | Intentional: tick-based scheduling/telemetry replaced blocking NTP. Use broker/consumer reception time. |
 
 ## Files and references
 
 | File | Purpose |
 | --- | --- |
-| [main.py](main.py) | Hardware setup, networking, sensing, control and display updates |
+| [main.py](main.py) | Monitoring-only boot entry, hardware setup, arming gate and cleanup |
+| [config.py](config.py), [settings.example.py](settings.example.py) | Defaults and private-override example |
+| [control.py](control.py) | Sensor snapshot, PID, states and latched interlocks |
+| [hardware.py](hardware.py) | Explicit-zero PWM and display adapters |
+| [runtime.py](runtime.py) | I/O sequencing, sample freshness and watchdog supervision |
+| [telemetry.py](telemetry.py) | Polled Wi-Fi setup, acknowledged MQTT and retry policy |
+| [tests](tests/README.md) | Host regression suite with mocked hardware |
 | [ssd1306.py](ssd1306.py) | OLED driver; includes I²C and SPI classes, application uses I²C |
 | [CODE_REVIEW.md](CODE_REVIEW.md) | Findings, proposed fixes and validation limits |
 | [docs/HARDWARE_RESEARCH.md](docs/HARDWARE_RESEARCH.md) | S4 Pro teardown, hardware evidence needed and SuperMini assessment |
 | [ISSUES.md](ISSUES.md) | Open, actionable work checklist; not completed fixes |
 | [.gitignore](.gitignore) | General Python ignore rules |
 
-There is no supplied schematic, PCB design, factory connector map, enclosure, simulation circuit, dependency lockfile or automated hardware test suite. No project licence file is present at the reviewed commit; public visibility does not establish a particular licence.
+There is no supplied schematic, PCB design, factory connector map, enclosure, simulation circuit, dependency lockfile or automated hardware test suite. No project licence file was present at the original reviewed commit; public visibility does not establish a particular licence.
 
 Technical references:
 
@@ -426,6 +462,6 @@ Technical references:
 - [MicroPython DHT interface](https://docs.micropython.org/en/latest/esp8266/tutorial/dht.html): pin functions, pull-ups and measurement spacing. Although under ESP8266 tutorials, the DHT22 interface information applies here.
 - [MicroPython installation](https://docs.micropython.org/en/v1.26.0/esp32/tutorial/intro.html), [mpremote](https://docs.micropython.org/en/v1.26.0/reference/mpremote.html), [packages](https://docs.micropython.org/en/v1.26.0/reference/packages.html) and [boot sequence](https://docs.micropython.org/en/v1.26.0/reference/reset_boot.html): deployment guidance. These documentation links do not imply testing on that firmware version.
 - [Official `umqtt.simple` source](https://github.com/micropython/micropython-lib/blob/master/micropython/umqtt.simple/umqtt/simple.py): MQTT defaults, publication and ping behaviour. Dependency version is not pinned here.
-- [Official `ntptime` source](https://github.com/micropython/micropython-lib/blob/master/micropython/net/ntptime/ntptime.py): NTP clock synchronisation and UTC behaviour.
+- [MicroPython WDT](https://docs.micropython.org/en/v1.26.0/library/machine.WDT.html): watchdog operation and inability to stop it once started.
 
 To contribute a verified S4 installation, supply its hardware revision, labelled photographs, schematic, load/driver ratings, supply/isolation details, firmware versions and test results. This evidence is needed to turn the documented ESP32 interfaces into a reproducible appliance conversion.
