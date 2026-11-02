@@ -1,6 +1,14 @@
 # Code review
 
-Reviewed on 2 November 2026 against commit `09fa5d7`: `main.py` (219 lines) and `ssd1306.py`. Firmware was not changed by this documentation work.
+Historical review of original commit `09fa5d7`, performed on 2 November 2026: original `main.py` (219 lines) and `ssd1306.py`. Source line references and reproductions below refer to that original version, not the refactored modules.
+
+## Remediation status
+
+The follow-up firmware change implements explicit zero output initialisation, monitoring-only boot, dual arming gates, required-sensor/freshness checks, individual overtemperature fault latching, elapsed-time PID/anti-windup, a shared measurement snapshot, timed fan cooldown, I/O heater inhibition, bounded socket attempts/retry, acknowledged MQTT and cleanup on interruption/fault. An armed watchdog is configured to reset into monitoring-only boot; normal monitoring does not start it.
+
+The standard-library host regression suite exercises these code paths with mocks. This does **not** resolve physical validation: no MicroPython runtime, GPIO reset behaviour, watchdog reset, actual sensors, broker, fan, heater or S4/Pro power interface was tested. Networking remains synchronous with heat inhibited during I/O; DNS is not claimed to have a strict socket timeout. See [current behaviour](README.md), [tests](tests/README.md) and [remaining work](ISSUES.md).
+
+The original findings are retained as the motivation and historical evidence for the fixes.
 
 ## Assessment
 
@@ -104,4 +112,4 @@ Partial sensor failures are excluded from means without a coverage fault. Fan-ch
 5. Correct/tune PID and define fan cooldown/interlock behaviour.
 6. Exercise faults with dummy loads before supervised physical installation, and document the evidence.
 
-These recommendations have not been implemented by the documentation change.
+The original documentation-only change implemented none of these recommendations. The follow-up software remediation above addresses the software portions; hardware investigation and physical validation remain open.

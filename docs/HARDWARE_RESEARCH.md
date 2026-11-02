@@ -1,10 +1,10 @@
 # S4 Pro hardware research and ESP32 integration
 
-Research status: 2 November 2026. This document records findings and investigation requirements, not a validated wiring procedure. The current firmware is unchanged from `09fa5d7`.
+Research status: 2 November 2026. This document records findings and investigation requirements, not a validated wiring procedure. The original firmware at `09fa5d7` has since been refactored for bench fault handling. GPIOs and the single-heater interface remain unchanged; no S4 Pro conversion or C3 pin map is implemented.
 
 ## S4 and S4 Pro are different targets
 
-The [manufacturer's S4 Pro page](https://www.sunlu.com/products/347) specifies two independently controlled heating systems, separate chambers and a 45–85 °C range. This repository's program has one heater output, one fan output and a fixed 45 °C target. Its name does not establish compatibility with either factory PCB.
+The [manufacturer's S4 Pro page](https://www.sunlu.com/products/347) specifies two independently controlled heating systems, separate chambers and a 45–85 °C range. The bench program still has one heater output, one fan output and a configurable 45 °C default target. Its name does not establish compatibility with either factory PCB.
 
 A Pro implementation needs independent zone control and fault handling. Fan channels, sensor interfaces and interlocks must be identified on the actual unit. Do not transfer original-S4 connector assumptions to the Pro.
 
