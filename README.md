@@ -2,7 +2,7 @@
 
 Experimental MicroPython controller for a **disconnected low-voltage bench**: DHT22 or SHT30/SHT31 sensors, an SSD1306 OLED, one heater command, one fan command, and optional MQTT telemetry. Neither SUNLU S4 nor S4 Pro factory wiring is established here. No appliance or ESP32 hardware has been tested with these changes.
 
-The software faults identified in [the original review](CODE_REVIEW.md) now have implementations and host regression tests. Hardware-dependent acceptance remains open in [ISSUES.md](ISSUES.md). **Heating is disabled by default.** Software tests do not establish safe heater operation.
+The software faults identified in [the original review](CODE_REVIEW.md) now have implementations and host regression tests. See [the software fix record](docs/SOFTWARE_FIXES.md) for changes published in commit `8ca81aa` and their validation limits. Hardware-dependent acceptance remains open in [ISSUES.md](ISSUES.md). **Heating is disabled by default.** Software tests do not establish safe heater operation.
 
 ## Current behaviour
 
@@ -56,7 +56,7 @@ mpremote connect COM5 reset
 
 Replace COM5 with the actual port. Stop the running application before later file updates. A missing `config.py` preserves the original four-DHT22 inventory and leaves both heat and networking disabled. The supplied example instead selects four SHT3x sensors through a TCA9548A; edit the inventory to match your wiring. Local `config.py` is ignored by Git. Do not commit passwords.
 
-To test telemetry, set `NETWORK_ENABLED=True`, Wi-Fi credentials and a numeric `MQTT_BROKER_IP`. Hostnames are deliberately rejected, avoiding network DNS waits. `HEAT_ENABLED=True` permits dummy heater output only after valid readings; it is not approval for appliance operation. Configuration currently exposes heat enable and networking; control thresholds/gains remain explicit constructor defaults in `controller.py`.
+To test telemetry, set `NETWORK_ENABLED=True`, Wi-Fi credentials and a numeric `MQTT_BROKER_IP`. Hostnames are deliberately rejected, avoiding network DNS waits. `HEAT_ENABLED=True` permits dummy heater output only after valid readings; it is not approval for appliance operation. Configuration currently exposes heat enable, sensor family/inventory and networking; control thresholds/gains remain explicit constructor defaults in `controller.py`.
 
 ## SHT30/SHT31 setup
 
@@ -116,6 +116,8 @@ Optional `MQTT_USER`/`MQTT_PASSWORD` supply authentication. Transport is **plain
 
 ## Host validation
 
+The implementation in commit `8ca81aa` passed **30 host tests on CPython 3.12.10**. This is a recorded host result, not MicroPython or hardware validation. To repeat the suite:
+
 ```powershell
 python -m unittest discover -s tests -v
 ```
@@ -135,6 +137,7 @@ These are CPython host tests. They do not demonstrate MicroPython runtime compat
 | `config.example.py` | Local configuration template without real credentials |
 | `ssd1306.py` | Existing OLED driver, unchanged |
 | `tests/` | Host fault-injection and regression checks |
+| [Software fix record](docs/SOFTWARE_FIXES.md) | Implemented fixes, validation evidence and remaining work |
 | [ISSUES.md](ISSUES.md) | Current progress and remaining acceptance criteria |
 | [CODE_REVIEW.md](CODE_REVIEW.md) | Historical findings against firmware 09fa5d7 |
 | [Hardware research](docs/HARDWARE_RESEARCH.md) | S4 Pro investigation and evidence requirements |

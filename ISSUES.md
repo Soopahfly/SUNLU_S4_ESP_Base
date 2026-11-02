@@ -1,11 +1,11 @@
 # Open work checklist
 
-Updated 2 November 2026. The original findings were recorded against firmware `09fa5d7`; see [CODE_REVIEW.md](CODE_REVIEW.md). Software changes below are implemented locally and exercised with CPython mocks. No Sunlu appliance or ESP32 hardware is available. A checked software item does not close its physical acceptance criteria.
+Updated 2 November 2026. The original findings were recorded against firmware `09fa5d7`; see [CODE_REVIEW.md](CODE_REVIEW.md). Software changes below were published in commit [`8ca81aa`](https://github.com/Soopahfly/SUNLU_S4_ESP_Base/commit/8ca81aa) and exercised with CPython mocks (30 tests passed). See [the fix record](docs/SOFTWARE_FIXES.md). The Sunlu appliance is not yet available; no physical ESP32 or appliance validation is claimed. A checked software item does not close its physical acceptance criteria.
 
 ## 1. Fail-safe startup, shutdown and sensor interlocks
 
 - [x] Initialise active-high heater/fan GPIOs low and PWM explicitly off before configuration/display/network setup.
-- [x] Define idle/heating/cooling/fault states; require all four valid sensors and fresh readings. Reject invalid values and detect late control iterations.
+- [x] Define idle/heating/cooling/fault states; require valid, fresh readings from every configured sensor (four DHT22 inputs or one to four explicitly configured SHT sensors). Reject invalid values and detect late control iterations.
 - [x] Shut heat off on any individual sensor at or above the bench overtemperature limit; latch faults until deliberate controller restart.
 - [x] Add exception/interrupt cleanup, independent heater-off attempts and full-fan fault demand. Faults do not clear on sensor/network recovery.
 - [x] Exercise startup, partial initialisation, configuration/display/network exceptions, Ctrl-C, total/partial/invalid/stale readings, slow acquisition, control gaps and hidden hotspots with host mocks.
@@ -23,7 +23,7 @@ Acceptance: host checks establish software transitions only. This issue remains 
 - [x] Implement five-minute cooldown after the last positive heat request and full-fan demand while any valid reading exceeds 30 C.
 - [x] Test elapsed-time equivalence, prolonged cold error, overshoot, cooldown, clock rollover, repeated-snapshot reuse, sampling count and sensor-fault transitions.
 - [ ] Tune gains, temperatures and cooldown using the identified hardware; assess fan feedback/airflow protection.
-- [ ] Verify actual DHT timing/accuracy and thermal/fan behaviour on the selected MicroPython build and bench setup.
+- [ ] Verify actual DHT/SHT timing/accuracy and thermal/fan behaviour on the selected MicroPython build and bench setup.
 
 Acceptance: original numerical windup and repeated-read cases have host regression coverage. Hardware tuning and thermal/fan acceptance remain open.
 

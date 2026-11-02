@@ -1,8 +1,8 @@
 # Code review
 
-Historical review of firmware 09fa5d7. Subsequent local software changes implement the shutdown/interlock, sampling/PID/cooldown and cooperative networking remedies with host regression tests. The findings below preserve the original evidence and line numbers; they are not a description of the current code. See [ISSUES.md](ISSUES.md) for current progress and remaining runtime/hardware acceptance.
+Historical review of firmware `09fa5d7`. Commit [`8ca81aa`](https://github.com/Soopahfly/SUNLU_S4_ESP_Base/commit/8ca81aa) implements software remedies for shutdown/interlocks, sampling, PID/cooldown and cooperative networking, and adds SHT30/SHT31 support with host regression tests. The findings below preserve the original evidence and line numbers; they are not a description of the current code. See [ISSUES.md](ISSUES.md) for current progress and remaining runtime/hardware acceptance.
 
-Reviewed on 2 November 2026 against commit `09fa5d7`: `main.py` (219 lines) and `ssd1306.py`. Firmware was not changed by this documentation work.
+Reviewed on 2 November 2026 against commit `09fa5d7`: `main.py` (219 lines) and `ssd1306.py`. The original review did not change firmware; the later implementation is summarised below.
 
 ## Assessment
 
@@ -10,7 +10,24 @@ This is a standalone MicroPython controller prototype, not a complete SUNLU S4 c
 
 Severity below reflects potential consequences with a power driver attached, not evidence of a physical incident.
 
-## Findings
+## Resolution status after commit 8ca81aa
+
+| Original finding | Implemented software remedy | Acceptance still pending |
+| --- | --- | --- |
+| Unspecified startup PWM duty | GPIOs low, then explicit zero-duty PWM before configuration/display/network setup | Measured boot/reset levels, active-high polarity and hardware default-off |
+| Faults can leave heat commanded on | Latched faults, required sensor coverage/freshness, exception/interrupt cleanup, independent heater-off attempts and full-fan fault demand | Physical fault injection, output-stage behaviour and independent protection |
+| Average-temperature warning hides hotspots | Any individual valid sensor at or above 60 C trips the bench controller | Hardware-derived limits, placement and independent thermal cutoff |
+| PID integral windup and missing elapsed time | Elapsed-time PID, derivative on measurement, bounded conditional integration and reset rules; zero heat at/above target | Thermal tuning on identified hardware |
+| Repeated sensor measurements | One acquisition per interval, reused for control/display/telemetry; next acquisition at least five seconds after previous completion | Actual DHT/SHT timing, wiring and driver latency |
+| Blocking/unhandled network operations | Cooperative nonblocking MQTT steps, phase deadlines/backoff, numeric IPv4 only, validated CONNACK/PUBACK; local control continues during expected connectivity loss | ESP32 network latency, real broker interoperability and live recovery |
+| Missing coverage policy and cooldown | Every configured sensor required; five-minute cooldown after the last heat request; full-fan demand on fault | Airflow/rotation feedback, cooling effectiveness and reset/power-loss behaviour |
+
+Additional changes: SHT30/SHT31 adapters with both CRC checks and optional TCA9548A routing; ignored local configuration; unique MQTT IDs/topics and optional username/password authentication. The example selects four multiplexed SHT sensors, while an absent config preserves four DHT22 inputs. Heating and networking are disabled by default.
+
+Validation recorded for the implementation: **30 passing CPython 3.12.10 host tests**, Python compilation and clean Git whitespace checks. Tests use mocked peripherals, clocks, Wi-Fi and sockets. No MicroPython execution, ESP32 flashing, live broker/network tests, electrical measurements, appliance operation or physical safety validation has been completed. See [the fix record](docs/SOFTWARE_FIXES.md) and [current checklist](ISSUES.md).
+
+## Historical findings against 09fa5d7
+
 
 ### Critical: no explicit safe startup duty
 
@@ -86,7 +103,7 @@ Partial sensor failures are excluded from means without a coverage fault. Fan-ch
 - OLED initialisation is mandatory and happens before networking. The I²C display defaults to `0x3C`; the driver's SPI support is unused.
 - No project licence file at the reviewed commit; preserve driver provenance and establish licensing for redistribution.
 
-## Validation performed
+## Validation performed for the original review
 
 - Read all tracked source files and checked README facts against them.
 - Parsed both Python files with host Python 3.14.4.
@@ -97,7 +114,7 @@ Partial sensor failures are excluded from means without a coverage fault. Fan-ch
 
 **Not performed:** ESP32 flashing, MicroPython runtime tests, live MQTT/network fault tests, electrical measurements, S4 inspection/wiring, load operation or physical safety validation. Mock checks establish software paths only.
 
-## Suggested implementation order
+## Original suggested implementation order
 
 1. Identify hardware, power interfaces, isolation and independent thermal/electrical protection.
 2. Implement safe startup, explicit fault states, maximum-temperature interlock and reliable heat shutdown.
@@ -106,4 +123,4 @@ Partial sensor failures are excluded from means without a coverage fault. Fan-ch
 5. Correct/tune PID and define fan cooldown/interlock behaviour.
 6. Exercise faults with dummy loads before supervised physical installation, and document the evidence.
 
-These recommendations have not been implemented by the documentation change.
+This was the original implementation plan. Its software remedies are now implemented as summarised above; hardware identification, runtime validation, thermal tuning and physical acceptance remain open.
