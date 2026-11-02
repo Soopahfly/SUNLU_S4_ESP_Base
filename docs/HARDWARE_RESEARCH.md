@@ -23,6 +23,33 @@ These are component/layout observations from video. No connector pinout, complet
 
 The upstream [S4 wiring issue](https://github.com/HTRiepe/SUNLU_S4_ESP_Base/issues/2) was checked, including comments; it contains no wiring answer. No verified Pro conversion guide was found in the search so far. This is not a claim that none exists.
 
+## Additional photograph observations: 2 November 2026
+
+Three user-supplied teardown screenshots were inspected: two views of a small PCB and one of the power PCB. These are not photographs or measurements of the owner's unit, which has not arrived yet. The screenshots remain in the chat; the observations are transcribed here rather than treating them as a verified schematic.
+
+| Observation | Interpretation and remaining uncertainty |
+| --- | --- |
+| Small-board revision appears to read `S4_Pro_Test_V1.2` | Tentative transcription; confirm with a sharper photograph. The word Test does not establish the board's function. |
+| Small-board labels include `SDA`, `SCL`, `CLK`, `DIO`, `5V`, `GND` | SDA/SCL suggest I2C, but protocol, signal direction, pull-up voltage and device identity remain unverified. CLK/DIO do not establish UART TX/RX or a particular programming interface. |
+| Component designated `U1` lies within a PCB cut-out | A sensor and thermal-isolation layout is a working hypothesis only. Its part marking is unreadable; no DHT22 or other sensor identification is established. |
+| Two small-board views appear to show opposite faces of the same board | Do not infer connector pin numbering or cable order from perspective alone. |
+| Power PCB shows relay, two heatsinks and a wired connector; apparent `12V`, `GND`, `5V` labels | Remaining labels need a straight-on close-up. Supply capacity, mains isolation, load allocation and control waveform are unknown. |
+
+No ESP32 wiring or GPIO assignment follows from these labels. A 5 V supply label does not establish data-line voltage; any ESP32 connection needs verified electrical levels and suitable translation where necessary. Passive observation of sensor traffic, if feasible, would provide monitoring evidence, not automatically remote start/stop or setpoint control.
+
+Priority photographs are both faces of the controller/display PCB with readable MCU markings, the power connector labels and the far end of its cable, and a macro of U1. Confirm all observations against the delivered appliance revision.
+
+## Available equipment and agreed investigation plan
+
+- Owner has a multimeter and a **Rigol DS1054Z** bench oscilloscope. Differential-probe ownership is unconfirmed; do not assume one is available.
+- No differential-probe purchase is planned for this project. Start with photographs, component identification and unpowered continuity mapping. Reassess the approach if subsequent measurements require equipment that is unavailable.
+- Treat the DS1054Z probe grounds as earth-connected and shared between channels. Two-channel subtraction does not provide isolation. Never disconnect protective earth to float the scope.
+- Existing passive probes may be usable only after the relevant circuit's isolation, reference and voltage levels are established. A continuity beep or absence of continuity alone is not proof of safe mains isolation.
+- On arrival, check normal operation before disassembly and record both zones' behaviour. Internal photography and continuity work require mains disconnected and stored energy made safe. Do not attach scope grounds, USB analysers or a USB-powered ESP32 to an unidentified reference.
+- First investigate retaining factory regulation and protection through a usable interface. Neither a suitable communications interface nor compatibility with the current firmware has been demonstrated.
+
+No powered captures, physical continuity checks, sensor identification or appliance modification have yet been performed.
+
 ## Evidence needed from the actual unit
 
 Start with photographs and markings. No powered measurements are needed for this first stage.

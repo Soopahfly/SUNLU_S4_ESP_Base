@@ -43,6 +43,7 @@ Network servicing is synchronous and interlocked; it is **not** an independent r
 
 ## 4. Hardware blocker: S4 Pro and SuperMini integration
 
+- [x] Record preliminary screenshot labels and equipment plan in the hardware research notes; all electrical interpretations remain unverified.
 - [ ] Record exact appliance/PCB revisions, both board faces, component markings and full harness map.
 - [ ] Establish supply/isolation boundaries, heater/fan topology, sensors, interlocks and protection.
 - [ ] Investigate a read-only factory communications capture before choosing bridge or controller replacement.
